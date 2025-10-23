@@ -1,0 +1,25 @@
+{
+  "name": "juke-box-websocket-server",
+  "version": "1.0.0",
+  "description": "WebSocket server for real-time tracklist updates in Juke Box Unity app",
+  "main": "websocket-server.js",
+  "scripts": {
+    "start": "node websocket-server.js",
+    "dev": "nodemon websocket-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": [
+    "websocket",
+    "unity",
+    "juke-box",
+    "real-time",
+    "tracklist"
+  ],
+  "author": "Juke Box Team",
+  "license": "MIT"
+}
