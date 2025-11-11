@@ -45,6 +45,9 @@ public class Song : MonoBehaviour
         
         // Pre-calculate keypad input for faster access
         KeypadInput = GetKeypadInputFromSong();
+        
+        // Disable raycast target on text components so they don't block button clicks
+        DisableTextRaycastTargets();
 
         if (playButton != null)
         {
@@ -73,6 +76,9 @@ public class Song : MonoBehaviour
         
         // Pre-calculate keypad input for faster access
         KeypadInput = GetKeypadInputFromSong();
+        
+        // Disable raycast target on text components so they don't block button clicks
+        DisableTextRaycastTargets();
 
         if (playButton != null)
         {
@@ -98,12 +104,50 @@ public class Song : MonoBehaviour
 
         textComponent.text = content;
     }
+    
+    /// <summary>
+    /// Disables raycast target on all text components so they don't block button clicks
+    /// </summary>
+    private void DisableTextRaycastTargets()
+    {
+        if (songNameText != null)
+        {
+            songNameText.raycastTarget = false;
+        }
+        
+        if (artistText != null)
+        {
+            artistText.raycastTarget = false;
+        }
+        
+        if (numberText != null)
+        {
+            numberText.raycastTarget = false;
+        }
+    }
 
     public async void PlayAudio()
     {
         // Use MongoDB tracklist system instead of direct audio playback
         if (trackQueueManager != null && albumManager != null)
         {
+            // Check if we're in slave mode and cooldown is active
+            if (albumManager.isSlave)
+            {
+                var mongoDBSlaveController = FindObjectOfType<MongoDBSlaveController>();
+                if (mongoDBSlaveController != null)
+                {
+                    bool isReady = mongoDBSlaveController.IsCooldownReady();
+                    Debug.Log($"[SONG] Cooldown check - IsReady: {isReady} for song: {SongName}");
+                    if (!isReady)
+                    {
+                        Debug.Log($"[SONG] Cooldown active - cannot add song: {SongName}");
+                        albumManager.UpdateDebugText($"Cooldown active - cannot add {SongName}");
+                        return;
+                    }
+                }
+            }
+            
             // Use pre-calculated keypad input or calculate it if not available
             string keypadInput = !string.IsNullOrEmpty(KeypadInput) ? KeypadInput : GetKeypadInputFromSong();
             
@@ -111,6 +155,16 @@ public class Song : MonoBehaviour
             {
                 Debug.Log($"[SONG] Adding song to tracklist via MongoDB: {SongName} (Keypad: {keypadInput})");
                 await trackQueueManager.AddSongToQueue(keypadInput, "user");
+                
+                // Immediately start cooldown for user-initiated adds on slave
+                if (albumManager.isSlave)
+                {
+                    var mongoDBSlaveController = FindObjectOfType<MongoDBSlaveController>();
+                    if (mongoDBSlaveController != null)
+                    {
+                        mongoDBSlaveController.StartCooldownTimer();
+                    }
+                }
             }
             else
             {

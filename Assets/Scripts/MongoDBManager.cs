@@ -201,6 +201,7 @@ public class MongoDBManager : MonoBehaviour
                 Artist = artist,
                 Album = AlbumDocument,
                 Duration = duration,
+                Length = duration, // Set Length field to the same value as Duration
                 Status = status,
                 Priority = priority,
                 CreatedAt = DateTime.UtcNow,
@@ -369,7 +370,8 @@ public class MongoDBManager : MonoBehaviour
             var filter = Builders<TracklistEntryDocument>.Filter.Eq(t => t.Id, tracklistId);
             var update = Builders<TracklistEntryDocument>.Update
                 .Set(t => t.ExistsAtMaster, existsAtMaster)
-                .Set(t => t.Duration, duration);
+                .Set(t => t.Duration, duration)
+                .Set(t => t.Length, duration); // Update Length field as well
 
             var result = await tracklistCollection.UpdateOneAsync(filter, update);
             Debug.Log($"[MONGODB_MANAGER] Update result - ModifiedCount: {result.ModifiedCount}, MatchedCount: {result.MatchedCount}");

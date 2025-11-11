@@ -143,7 +143,7 @@ public class AlbumManager : MonoBehaviour
                     Album albumInstance = Instantiate(AlbumPrefab, UnseenAlbums);
                     // Find album cover in local albums folder
                     Sprite coverSprite = FindAlbumCover(mongoAlbum.Title);
-                    albumInstance.Initialize(mongoAlbum.Title, "Various Artists", coverSprite, "", albumNumber);
+                    albumInstance.Initialize(mongoAlbum.Title, mongoAlbum.Artist, coverSprite, "", albumNumber);
                     albums.Add(albumInstance);
 
                     // Add songs to the album
@@ -317,7 +317,7 @@ public class AlbumManager : MonoBehaviour
                     Album albumInstance = Instantiate(AlbumPrefab, UnseenAlbums);
                     // Find album cover in local albums folder
                     Sprite coverSprite = FindAlbumCover(mongoAlbum.Title);
-                    albumInstance.Initialize(mongoAlbum.Title, "Various Artists", coverSprite, "", albumNumber);
+                    albumInstance.Initialize(mongoAlbum.Title, mongoAlbum.Artist, coverSprite, "", albumNumber);
                     albums.Add(albumInstance);
 
                     // Add songs to the album

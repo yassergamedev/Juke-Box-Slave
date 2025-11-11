@@ -66,6 +66,11 @@ public class TrackQueueManager : MonoBehaviour
     private Dictionary<string, float> lastSongAddedTime = new Dictionary<string, float>();
     private Coroutine tracklistPollingCoroutine;
     private TracklistEntryDocument currentPlayingTrack;
+    
+    // Skip Cooldown Feature
+    private float lastSkipTime = 0f;
+    private float skipCooldownDuration = 1f; // Ignore insertions for 1 second after skip
+    private bool isSkipping = false; // Prevent duplicate skip operations
     private void Start()
     {
         Debug.Log("[TRACKQUEUE] Starting TrackQueueManager...");
@@ -158,13 +163,14 @@ public class TrackQueueManager : MonoBehaviour
         // Create a unique message identifier to prevent duplicate processing
         string messageId = $"{update.operationType}_{update.songTitle}_{update.status}_{update.songId}";
         
-        // For resume commands, skip deduplication entirely to allow retries
+        // For pause/resume commands, skip deduplication entirely to allow retries
         if (processedMessages.Contains(messageId))
         {
-            // Check if this is a resume command and skip deduplication
-            if (update.operationType.ToLower() == "update" && update.status.ToLower() == "playing")
+            // Check if this is a pause or resume command and skip deduplication
+            if (update.operationType.ToLower() == "update" && 
+                (update.status.ToLower() == "playing" || update.status.ToLower() == "paused"))
             {
-                Debug.Log($"[TRACKQUEUE] Resume command - skipping deduplication to allow retry: {messageId}");
+                Debug.Log($"[TRACKQUEUE] Pause/Resume command - skipping deduplication to allow retry: {messageId}");
             }
             else
             {
@@ -176,8 +182,9 @@ public class TrackQueueManager : MonoBehaviour
         Debug.Log($"[TRACKQUEUE] Processing message: {messageId}");
         Debug.Log($"[TRACKQUEUE] Message details - operationType: {update.operationType}, status: {update.status}, songTitle: {update.songTitle}");
         
-        // Mark this message as processed (only if not a resume command)
-        if (!(update.operationType.ToLower() == "update" && update.status.ToLower() == "playing"))
+        // Mark this message as processed (only if not a pause/resume command)
+        if (!(update.operationType.ToLower() == "update" && 
+              (update.status.ToLower() == "playing" || update.status.ToLower() == "paused")))
         {
             processedMessages.Add(messageId);
         }
@@ -210,8 +217,17 @@ public class TrackQueueManager : MonoBehaviour
                     break;
                     
                 case "playing":
-                    // Check if this is a new song insertion or a resume command
-                    if (update.songId != null && !string.IsNullOrEmpty(update.songId))
+                    // Check if this is a skip operation (song already exists in queue) or new song
+                    // Bypass cooldown check since this is from WebSocket (automated source)
+                    bool songExistsInQueue = IsSongAlreadyInQueue(update.songTitle, update.songId, bypassCooldown: true);
+                    
+                    if (songExistsInQueue)
+                    {
+                        // This is a skip operation - just update the current song, don't add new one
+                        Debug.Log($"[TRACKQUEUE] Song already exists - treating as skip operation: {update.songTitle}");
+                        HandleWebSocketSkipToSong(update);
+                    }
+                    else if (update.songId != null && !string.IsNullOrEmpty(update.songId))
                     {
                         // This is a new song with complete data - treat as insert
                         Debug.Log($"[TRACKQUEUE] New song with playing status - calling HandleWebSocketInsert()");
@@ -259,6 +275,10 @@ public class TrackQueueManager : MonoBehaviour
                     
                 case "insert":
                     HandleWebSocketInsert(update);
+                    break;
+                    
+                case "delete":
+                    HandleWebSocketDelete(update);
                     break;
                     
                 default:
@@ -791,8 +811,7 @@ public class TrackQueueManager : MonoBehaviour
 
     private void UpdateSlaveUI()
     {
-        Debug.Log($"[TRACKQUEUE] UpdateSlaveUI called - currentSongIndex: {currentSongIndex}, queueCount: {queueList.Count}, slaveCurrentTime: {slaveCurrentTime:F1}s");
-        
+
         // Safety check for currentSongIndex and queue
         if (currentSongIndex < 0 || currentSongIndex >= queueList.Count || queueList.Count == 0)
         {
@@ -877,6 +896,15 @@ public class TrackQueueManager : MonoBehaviour
             Song selectedSong = album.Songs[songIndex - 1];
             Debug.Log($"[TRACKQUEUE] STEP 1: Validating audio file exists for: {selectedSong.SongName}");
 
+            // Check cooldown only for user-initiated actions (not for automated sources)
+            if (requestedBy == "user" && IsSongInCooldown(selectedSong.SongName))
+            {
+                float timeSinceLastAdded = Time.time - lastSongAddedTime[selectedSong.SongName];
+                Debug.Log($"[TRACKQUEUE] Song '{selectedSong.SongName}' is in cooldown period ({timeSinceLastAdded:F1}s / 5.0s), blocking user action");
+                albumManager.UpdateDebugText($"Song '{selectedSong.SongName}' was recently added. Please wait {5.0f - timeSinceLastAdded:F1} seconds.");
+                return;
+            }
+
             // Find the corresponding MongoDB song
             var mongoSongs = await mongoDBManager.GetAllSongsAsync();
             var mongoSong = mongoSongs.Find(s => s.Title.Contains(selectedSong.SongName) && s.Album == album.albumName);
@@ -919,6 +947,13 @@ public class TrackQueueManager : MonoBehaviour
             {
                 Debug.Log($"[TRACKQUEUE] Successfully added to MongoDB tracklist - ID: {tracklistEntry.Id}, ExistsAtMaster: {tracklistEntry.ExistsAtMaster}");
                 albumManager.UpdateDebugText($"Added {selectedSong.SongName} to tracklist - waiting for master validation");
+                
+                // Record cooldown time only for user-initiated actions (not for automated sources)
+                if (requestedBy == "user")
+                {
+                    lastSongAddedTime[selectedSong.SongName] = Time.time;
+                    Debug.Log($"[TRACKQUEUE] Recorded cooldown time for user-initiated song: {selectedSong.SongName}");
+                }
             }
             else
             {
@@ -944,7 +979,7 @@ public class TrackQueueManager : MonoBehaviour
                 }
                 
                 // Add to Unity queue using the found audio path
-                StartCoroutine(AddSongToQueueWithPath(selectedSong.SongName, audioPath, 180, false));
+                StartCoroutine(AddSongToQueueWithPath(selectedSong.SongName, audioPath, selectedSong.SongLength, false));
                 
                 Debug.Log($"[TRACKQUEUE] Master added song to Unity queue: {selectedSong.SongName}");
             }
@@ -1041,7 +1076,7 @@ public class TrackQueueManager : MonoBehaviour
                 // Add directly to Unity queue using the audio path
                 Debug.Log($"[TRACKQUEUE] Master adding song to Unity queue: {selectedSong.SongName}");
                 Debug.Log($"[TRACKQUEUE] Queue count before adding: {queueList.Count}");
-                StartCoroutine(AddSongToQueueWithPath(selectedSong.SongName, audioPath, 180, false));
+                StartCoroutine(AddSongToQueueWithPath(selectedSong.SongName, audioPath, selectedSong.SongLength, false));
 
                 Debug.Log($"[TRACKQUEUE] Successfully added {selectedSong.SongName} to Unity queue from MongoDB");
                 albumManager.UpdateDebugText($"Added {selectedSong.SongName} to Unity queue from MongoDB");
@@ -1102,6 +1137,12 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
     }
     
     queueList.Add((songInstance, songInstance.gameObject));
+    
+    // Start cooldown timer if this is a slave
+    if (albumManager.isSlave && mongoDBSlaveController != null)
+    {
+        mongoDBSlaveController.StartCooldownTimer();
+    }
     
     Debug.Log($"[TRACKQUEUE] Added song to queue list: {songName} (GameObject: {songInstance.gameObject.name})");
     Debug.Log($"[TRACKQUEUE] Total songs in queue: {queueList.Count}");
@@ -1360,6 +1401,21 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
         if (queueList.Count > 0)
         {
             albumManager.UpdateDebugText("Skipping to next song...");
+            
+            // Send WebSocket skip message to server
+            if (currentSongIndex < queueList.Count)
+            {
+                TracklistUpdate skipUpdate = new TracklistUpdate
+                {
+                    operationType = "skip",
+                    songTitle = queueList[currentSongIndex].Item1.SongName,
+                    status = "skipped",
+                    songIndex = 0
+                };
+                string skipMessage = JsonUtility.ToJson(skipUpdate);
+                SendWebSocketMessage(skipMessage);
+                Debug.Log($"[TRACKQUEUE] Sent skip WebSocket message for: {queueList[currentSongIndex].Item1.SongName}");
+            }
 
             audioSource.Stop(); // Stop current song
             isPaused = false;   // Ensure resume doesn�t interfere
@@ -1383,8 +1439,20 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
 
     public void SkipSongSlave()
     {
+        // Prevent duplicate skip operations
+        if (isSkipping)
+        {
+            Debug.Log($"[TRACKQUEUE] Skip already in progress - ignoring duplicate skip");
+            return;
+        }
+        
+        isSkipping = true;
         Debug.Log($"[TRACKQUEUE] SkipSongSlave called - queueCount: {queueList.Count}, currentSongIndex: {currentSongIndex}");
         albumManager.UpdateDebugText("Skipping to next song (Slave)...");
+        
+        // Set skip time for cooldown
+        lastSkipTime = Time.time;
+        Debug.Log($"[TRACKQUEUE] Slave skip occurred - setting cooldown until {lastSkipTime + skipCooldownDuration}");
 
         if (queueList.Count > 1) // Ensure there�s a next song available
         {
@@ -1440,6 +1508,16 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
             albumManager.UpdateDebugText("No more songs in the queue (Slave).");
             StopAllPlayback(); // Stop UI updates since there are no more songs
         }
+        
+        // Reset skip flag after a short delay
+        StartCoroutine(ResetSkipFlag());
+    }
+    
+    private IEnumerator ResetSkipFlag()
+    {
+        yield return new WaitForSeconds(0.5f); // 500ms cooldown
+        isSkipping = false;
+        Debug.Log($"[TRACKQUEUE] Skip flag reset - ready for next skip operation");
     }
 
     private void StopAllPlayback()
@@ -1630,6 +1708,7 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
     {
         Debug.Log("[TRACKQUEUE] WebSocket pause command received");
         Debug.Log($"[TRACKQUEUE] Current state - isSlave: {albumManager.isSlave}, isSlavePlaying: {isSlavePlaying}, isPaused: {isPaused}");
+        Debug.Log($"[TRACKQUEUE] Additional state - wasPaused: {wasPaused}, queueCount: {queueList.Count}, slaveCurrentTime: {slaveCurrentTime}");
         
         if (albumManager.isSlave && isSlavePlaying)
         {
@@ -1645,6 +1724,7 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
         else
         {
             Debug.Log($"[TRACKQUEUE] Pause command ignored - isSlave: {albumManager.isSlave}, isSlavePlaying: {isSlavePlaying}, audioSource.isPlaying: {audioSource?.isPlaying}");
+            Debug.Log($"[TRACKQUEUE] Pause ignored details - wasPaused: {wasPaused}, queueCount: {queueList.Count}, slaveCurrentTime: {slaveCurrentTime}");
         }
     }
     
@@ -1663,7 +1743,7 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
                 Debug.Log("[TRACKQUEUE] CASE 1: Currently playing but paused - resuming immediately");
                 isPaused = false;
                 wasPaused = false; // Reset pause flag
-                Debug.Log($"[TRACKQUEUE] Slave playback resumed via WebSocket - isPaused set to: {isPaused}");
+                Debug.Log($"[TRACKQUEUE] Slave playback resumed via WebSocket - isPaused set to: {isPaused}, wasPaused set to: {wasPaused}");
             }
             else if (!isSlavePlaying && wasPaused && queueList.Count > 0)
             {
@@ -1727,6 +1807,23 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
         
         if (albumManager.isSlave)
         {
+            // If status is "playing", resume playback
+            if (update.status == "playing")
+            {
+                Debug.Log($"[TRACKQUEUE] Received playing status - resuming playback");
+                albumManager.UpdateDebugText("Resuming playback");
+                HandleWebSocketResume();
+                return;
+            }
+            
+            // Check if we're in skip cooldown period
+            float timeSinceLastSkip = Time.time - lastSkipTime;
+            if (timeSinceLastSkip < skipCooldownDuration)
+            {
+                Debug.Log($"[TRACKQUEUE] In skip cooldown period ({timeSinceLastSkip:F1}s / {skipCooldownDuration}s) - ignoring insertion: {update.songTitle}");
+                return;
+            }
+            
             // Only add to Unity UI if the song has been validated by the master
             if (!update.existsAtMaster)
             {
@@ -1734,10 +1831,18 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
                 return;
             }
             
-            Debug.Log($"[TRACKQUEUE] Song validated by master (existsAtMaster=true) - adding to Unity UI: {update.songTitle}");
+            // Only add songs that the master added himself (not from webapp)
+            if (update.masterId != "master")
+            {
+                Debug.Log($"[TRACKQUEUE] Song not added by master (masterId={update.masterId}) - ignoring: {update.songTitle}");
+                return;
+            }
+            
+            Debug.Log($"[TRACKQUEUE] Song validated by master and added by master (existsAtMaster=true, masterId=master) - adding to Unity UI: {update.songTitle}");
             
             // Check if song already exists in queue to prevent duplicates
-            if (IsSongAlreadyInQueue(update.songTitle, update.songId))
+            // Bypass cooldown check since this is from WebSocket (automated source)
+            if (IsSongAlreadyInQueue(update.songTitle, update.songId, bypassCooldown: true))
             {
                 Debug.Log($"[TRACKQUEUE] Song already exists in queue, skipping: {update.songTitle}");
                 return;
@@ -1754,29 +1859,57 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
         }
     }
     
-    private bool IsSongAlreadyInQueue(string songTitle, string songId)
+    /// <summary>
+    /// Checks if a song is in cooldown period (only for user-initiated actions)
+    /// </summary>
+    private bool IsSongInCooldown(string songTitle)
     {
         float currentTime = Time.time;
-        float cooldownTime = 5.0f; // 2 seconds cooldown
+        float cooldownTime = 5.0f; // 5 seconds cooldown
         
-        // Check if a song with the same name was added recently (within 2 seconds)
         if (lastSongAddedTime.ContainsKey(songTitle))
         {
             float timeSinceLastAdded = currentTime - lastSongAddedTime[songTitle];
             if (timeSinceLastAdded < cooldownTime)
             {
-                Debug.Log($"[TRACKQUEUE] Song '{songTitle}' was added {timeSinceLastAdded:F1}s ago, preventing duplicate (cooldown: {cooldownTime}s)");
                 return true;
             }
         }
         
-        // Also check if this exact song (by songId) is already in the queue
+        return false;
+    }
+
+    /// <summary>
+    /// Checks if a song already exists in the queue (for automated sources, bypasses cooldown check)
+    /// </summary>
+    private bool IsSongAlreadyInQueue(string songTitle, string songId, bool bypassCooldown = false)
+    {
+        // First check if this exact song (by songId) is already in the queue
         foreach (var (song, gameObject) in queueList)
         {
             if (song != null && song.KeypadInput == songId)
             {
                 Debug.Log($"[TRACKQUEUE] Song with ID '{songId}' already exists in queue, preventing duplicate");
                 return true;
+            }
+        }
+        
+        // Only check cooldown if not bypassing (for automated sources like WebSocket, master, etc.)
+        if (!bypassCooldown)
+        {
+            float currentTime = Time.time;
+            float cooldownTime = 5.0f; // 5 seconds cooldown
+            
+            // Check if a song with the same name was added recently (within cooldown period)
+            // This prevents rapid duplicate additions of the same song title
+            if (lastSongAddedTime.ContainsKey(songTitle))
+            {
+                float timeSinceLastAdded = currentTime - lastSongAddedTime[songTitle];
+                if (timeSinceLastAdded < cooldownTime)
+                {
+                    Debug.Log($"[TRACKQUEUE] Song '{songTitle}' was added {timeSinceLastAdded:F1}s ago, preventing duplicate (cooldown: {cooldownTime}s)");
+                    return true;
+                }
             }
         }
         
@@ -1824,9 +1957,13 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
                 
                 // Set song length
                 song.SongLength = update.duration;
+                Debug.Log($"[TRACKQUEUE] Set song length from WebSocket: {update.songTitle} = {update.duration} seconds, SongLength now: {song.SongLength}");
                 
                 // Add to Unity queue (correct order: Song, GameObject)
                 queueList.Add((song, songGO));
+                
+                // Don't start cooldown timer for WebSocket songs (master songs)
+                // Cooldown only applies to user-initiated songs
                 
                 // Record the time this song was added for duplicate prevention
                 lastSongAddedTime[update.songTitle] = Time.time;
@@ -1853,11 +1990,96 @@ public IEnumerator AddSongToQueueWithPath(string songName, string audioPath, flo
         }
     }
     
+    private void HandleWebSocketDelete(TracklistUpdate update)
+    {
+        Debug.Log($"[TRACKQUEUE] WebSocket delete command received: {update.songTitle}");
+        
+        if (albumManager.isSlave)
+        {
+            Debug.Log($"[TRACKQUEUE] Delete received - immediately skipping to next song");
+            albumManager.UpdateDebugText("Song deleted - skipping to next...");
+            
+            // Treat delete message as a skip command - immediately skip to next song
+            Debug.Log($"[TRACKQUEUE] Calling SkipSongSlave() for delete message");
+            SkipSongSlave();
+        }
+        else
+        {
+            Debug.Log($"[TRACKQUEUE] Not in slave mode - ignoring WebSocket delete");
+        }
+    }
+    
+    private void HandleWebSocketSkipToSong(TracklistUpdate update)
+    {
+        Debug.Log($"[TRACKQUEUE] WebSocket skip to song: {update.songTitle}");
+        
+        if (albumManager.isSlave)
+        {
+            // Set skip time for cooldown
+            lastSkipTime = Time.time;
+            Debug.Log($"[TRACKQUEUE] WebSocket skip occurred - setting cooldown until {lastSkipTime + skipCooldownDuration}");
+            // Find the song in the queue and move it to current position
+            for (int i = 0; i < queueList.Count; i++)
+            {
+                if (queueList[i].Item1.SongName == update.songTitle)
+                {
+                    Debug.Log($"[TRACKQUEUE] Found song to skip to: {update.songTitle} at index {i}");
+                    
+                    // If this is not the current song, remove current and start this one
+                    if (i != currentSongIndex)
+                    {
+                        // Remove current song if it exists
+                        if (currentSongIndex >= 0 && currentSongIndex < queueList.Count)
+                        {
+                            Debug.Log($"[TRACKQUEUE] Removing current song at index {currentSongIndex}");
+                            Destroy(queueList[currentSongIndex].Item2);
+                            queueList.RemoveAt(currentSongIndex);
+                            
+                            // Adjust currentSongIndex if needed
+                            if (i > currentSongIndex)
+                            {
+                                i--; // Adjust index since we removed an item before this one
+                            }
+                        }
+                        
+                        // Move the target song to the front
+                        var targetSong = queueList[i];
+                        queueList.RemoveAt(i);
+                        queueList.Insert(0, targetSong);
+                        
+                        // Update currentSongIndex to 0
+                        currentSongIndex = 0;
+                        
+                        Debug.Log($"[TRACKQUEUE] Moved song to front and set as current");
+                        albumManager.UpdateDebugText($"Skipped to: {update.songTitle}");
+                        
+                        // Start playback of the new current song
+                        if (queueList.Count > 0)
+                        {
+                            StartSlavePlayback();
+                        }
+                    }
+                    else
+                    {
+                        Debug.Log($"[TRACKQUEUE] Song is already current - no action needed");
+                    }
+                    
+                    break;
+                }
+            }
+        }
+        else
+        {
+            Debug.Log($"[TRACKQUEUE] Not in slave mode - ignoring WebSocket skip to song");
+        }
+    }
+    
     private void StartSlavePlayback()
     {
         if (queueList.Count > 0)
         {
             Debug.Log($"[TRACKQUEUE] Starting slave playback with {queueList.Count} songs");
+            Debug.Log($"[TRACKQUEUE] First song details - Name: {queueList[0].Item1.SongName}, SongLength: {queueList[0].Item1.SongLength}");
             isSlavePlaying = true;
             slaveCurrentTime = 0f;
             currentSongIndex = 0;

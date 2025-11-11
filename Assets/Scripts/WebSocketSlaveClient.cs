@@ -17,7 +17,8 @@ public class TracklistUpdate
     public string songId;
     public string artist;
     public string album;
-    public int duration; // Song length in seconds
+    public int duration; // Song length in seconds (legacy)
+    public int length; // Song length in seconds (correct field)
     public int priority;
     public string requestedBy;
     public string masterId;

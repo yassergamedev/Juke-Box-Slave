@@ -22,6 +22,10 @@ public class MongoDBSlaveController : MonoBehaviour
     public Button previousSongButton;
     public Text statusText;
     public Text currentSongText;
+    public TMP_InputField cooldownInputField;
+    public Button cooldownConfirmButton;
+    public TMPro.TextMeshProUGUI cooldownStatusText;
+    public Button cursorLockToggleButton;
 
     private MongoDBManager mongoDBManager;
     private AlbumManager albumManager;
@@ -31,9 +35,19 @@ public class MongoDBSlaveController : MonoBehaviour
     private WebSocketSlaveClient webSocketClient;
     private bool isWebSocketConnected = false;
     private bool isConnected = false;
+    
+    // Cooldown system
+    private float addSongCooldown = 5f; // Default 5 seconds
+    private float lastAddSongTime = 0f; // Will be set to a very old time in Start() to make cooldown ready
 
     private void Start()
     {
+        // Load cooldown from PlayerPrefs
+        addSongCooldown = PlayerPrefs.GetFloat("AddSongCooldown", 5f);
+        Debug.Log($"[MONGODB_SLAVE] Loaded add song cooldown from PlayerPrefs: {addSongCooldown} seconds");
+        
+        // Don't initialize cooldown on startup - keep it fresh and ready
+        
         // Generate unique slave ID
         slaveId = $"slave_{System.Guid.NewGuid().ToString("N")[..8]}";
         Debug.Log($"[MONGODB_SLAVE_{slaveId}] Starting MongoDB Slave Controller...");
@@ -96,6 +110,101 @@ public class MongoDBSlaveController : MonoBehaviour
         
         if (previousSongButton != null)
             previousSongButton.onClick.AddListener(() => _ = PlayPreviousSong());
+        
+        // Setup cooldown input field and button
+        if (cooldownInputField != null)
+        {
+            cooldownInputField.text = addSongCooldown.ToString();
+        }
+        
+        if (cooldownConfirmButton != null)
+        {
+            cooldownConfirmButton.onClick.AddListener(OnCooldownConfirmClicked);
+        }
+        
+        // Setup cursor lock toggle button
+        if (cursorLockToggleButton != null)
+        {
+            cursorLockToggleButton.onClick.AddListener(ToggleCursorLock);
+        }
+        
+        // Start coroutine to update cooldown status
+        StartCoroutine(UpdateCooldownStatus());
+    }
+    
+    private void OnCooldownConfirmClicked()
+    {
+        if (cooldownInputField != null && float.TryParse(cooldownInputField.text, out float newCooldown))
+        {
+            if (newCooldown >= 0 && newCooldown <= 300) // Reasonable range: 0-5 minutes
+            {
+                addSongCooldown = newCooldown;
+                PlayerPrefs.SetFloat("AddSongCooldown", addSongCooldown);
+                PlayerPrefs.Save();
+                Debug.Log($"[MONGODB_SLAVE_{slaveId}] Cooldown updated and saved: {addSongCooldown} seconds");
+                UpdateDebugText($"Cooldown set to {addSongCooldown} seconds");
+            }
+            else
+            {
+                Debug.LogWarning($"[MONGODB_SLAVE_{slaveId}] Invalid cooldown value: {newCooldown}. Must be between 0-300 seconds.");
+                UpdateDebugText($"Invalid cooldown: {newCooldown}. Use 0-300 seconds.");
+                // Reset to current value
+                cooldownInputField.text = addSongCooldown.ToString();
+            }
+        }
+        else
+        {
+            Debug.LogWarning($"[MONGODB_SLAVE_{slaveId}] Failed to parse cooldown value: {cooldownInputField?.text}");
+            UpdateDebugText("Invalid cooldown format. Use numbers only.");
+            // Reset to current value
+            if (cooldownInputField != null)
+                cooldownInputField.text = addSongCooldown.ToString();
+        }
+    }
+    
+    private IEnumerator UpdateCooldownStatus()
+    {
+        while (true)
+        {
+            yield return new WaitForSeconds(0.1f); // Update every 100ms
+            
+            float timeSinceLastAdd = Time.time - lastAddSongTime;
+            float remainingTime = addSongCooldown - timeSinceLastAdd;
+            
+            // Debug logging every 5 seconds
+            if (Mathf.FloorToInt(Time.time) % 5 == 0 && Mathf.FloorToInt(Time.time) != Mathf.FloorToInt(Time.time - Time.deltaTime))
+            {
+                Debug.Log($"[MONGODB_SLAVE_{slaveId}] Cooldown debug - Time.time: {Time.time:F1}, lastAddSongTime: {lastAddSongTime:F1}, timeSinceLastAdd: {timeSinceLastAdd:F1}, addSongCooldown: {addSongCooldown}, remainingTime: {remainingTime:F1}");
+            }
+            
+            // Determine readiness
+            bool isReady = remainingTime <= 0f;
+            
+            // Clamp remaining time to >= 0 and display as whole seconds
+            int remainingWhole = Mathf.Max(0, Mathf.CeilToInt(remainingTime));
+            
+            if (cooldownStatusText != null)
+            {
+                if (!isReady)
+                {
+                    cooldownStatusText.text = "Cooldown: " + remainingWhole ;
+                }
+                else
+                {
+                    cooldownStatusText.text = "Ready (Cooldown: " + addSongCooldown + ")";
+                }
+            }
+            
+            // Disable/enable input UI while on cooldown
+            if (addSongButton != null)
+            {
+                addSongButton.interactable = isReady;
+            }
+            if (songInputField != null)
+            {
+                songInputField.interactable = isReady;
+            }
+        }
     }
 
     private void StartPolling()
@@ -178,9 +287,9 @@ public class MongoDBSlaveController : MonoBehaviour
             Debug.Log($"[MONGODB_SLAVE_{slaveId}] Processing validated song: {song.Title}");
             Debug.Log($"[MONGODB_SLAVE_{slaveId}] Song data - Duration: {song.Duration}, Length: {song.Length}, ExistsAtMaster: {song.ExistsAtMaster}");
             
-            // Use Length field (which contains the actual song duration) or Duration as fallback
-            float duration = song.Length ?? song.Duration ?? 180f;
-            Debug.Log($"[MONGODB_SLAVE_{slaveId}] Using song length: {duration} seconds (from Length: {song.Length}, Duration: {song.Duration})");
+            // Use Duration field (which contains the song duration) with Length as fallback
+            float duration = song.Duration ?? song.Length ?? 180f;
+            Debug.Log($"[MONGODB_SLAVE_{slaveId}] Using song duration: {duration} seconds (from Duration: {song.Duration}, Length: {song.Length})");
             
             // Add song to Unity queue for slave simulation
             StartCoroutine(AddSongToSlaveQueue(song.Title, duration));
@@ -222,6 +331,10 @@ public class MongoDBSlaveController : MonoBehaviour
         // Add to Unity queue
         trackQueueManager.queueList.Add((songInstance, songInstance.gameObject));
         
+        // Start cooldown timer when song is added
+        lastAddSongTime = Time.time;
+        Debug.Log($"[MONGODB_SLAVE_{slaveId}] Started cooldown timer for song: {songName}");
+        
         Debug.Log($"[MONGODB_SLAVE_{slaveId}] Added song to slave queue: {songName} (Duration: {duration}s = {duration/60:F1} minutes)");
         Debug.Log($"[MONGODB_SLAVE_{slaveId}] Total songs in slave queue: {trackQueueManager.queueList.Count}");
         Debug.Log($"[MONGODB_SLAVE_{slaveId}] Current isSlavePlaying status: {trackQueueManager.isSlavePlaying}");
@@ -231,6 +344,7 @@ public class MongoDBSlaveController : MonoBehaviour
         {
             Debug.Log($"[MONGODB_SLAVE_{slaveId}] Starting slave playback simulation with duration: {duration} seconds");
             trackQueueManager.isSlavePlaying = true;
+            
             trackQueueManager.slaveCurrentTime = 0f;
             
             // Set currentSongIndex to 0 for the first song in slave mode
@@ -248,6 +362,15 @@ public class MongoDBSlaveController : MonoBehaviour
 
     public async Task AddSongToQueue()
     {
+        // Check cooldown
+        float timeSinceLastAdd = Time.time - lastAddSongTime;
+        if (timeSinceLastAdd < addSongCooldown)
+        {
+            float remainingTime = addSongCooldown - timeSinceLastAdd;
+            UpdateDebugText($"Cooldown active. Please wait {remainingTime:F1} seconds.");
+            return;
+        }
+        
         if (string.IsNullOrEmpty(songInputField.text))
         {
             UpdateDebugText("Please enter a song or keypad input (DD-DD)");
@@ -256,6 +379,8 @@ public class MongoDBSlaveController : MonoBehaviour
 
         try
         {
+            // Update last add time
+            lastAddSongTime = Time.time;
             string input = songInputField.text.Trim();
             string songId = System.Guid.NewGuid().ToString();
             string title = input;
@@ -479,11 +604,18 @@ public class MongoDBSlaveController : MonoBehaviour
         }
         
         // Subscribe to WebSocket events
+        webSocketClient.OnTracklistUpdate += OnWebSocketTracklistUpdate;
         webSocketClient.OnConnected += OnWebSocketConnected;
         webSocketClient.OnDisconnected += OnWebSocketDisconnected;
         webSocketClient.OnError += OnWebSocketError;
         
         Debug.Log($"[MONGODB_SLAVE_{slaveId}] WebSocket client initialized successfully");
+    }
+    
+    private void OnWebSocketTracklistUpdate(TracklistUpdate update)
+    {
+        Debug.Log($"[MONGODB_SLAVE_{slaveId}] Received WebSocket tracklist update: {update.operationType} - {update.songTitle}");
+        // TrackQueueManager will handle this
     }
     
     private void OnWebSocketConnected()
@@ -504,6 +636,35 @@ public class MongoDBSlaveController : MonoBehaviour
     {
         Debug.LogError($"[MONGODB_SLAVE_{slaveId}] WebSocket error: {error}");
         UpdateDebugText($"WebSocket error: {error}");
+    }
+    
+    public bool IsCooldownReady()
+    {
+        float timeSinceLastAdd = Time.time - lastAddSongTime;
+        bool isReady = timeSinceLastAdd >= addSongCooldown;
+        Debug.Log($"[MONGODB_SLAVE_{slaveId}] IsCooldownReady - Time.time: {Time.time:F1}, lastAddSongTime: {lastAddSongTime:F1}, timeSinceLastAdd: {timeSinceLastAdd:F1}, addSongCooldown: {addSongCooldown}, isReady: {isReady}");
+        return isReady;
+    }
+    
+    // Public method to start cooldown timer (called by TrackQueueManager)
+    public void StartCooldownTimer()
+    {
+        lastAddSongTime = Time.time;
+        Debug.Log($"[MONGODB_SLAVE_{slaveId}] Cooldown timer started externally - Time.time: {Time.time:F1}, lastAddSongTime: {lastAddSongTime:F1}");
+    }
+    
+    private void ToggleCursorLock()
+    {
+        if (Cursor.lockState == CursorLockMode.Locked)
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+        }
+        else
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+        }
     }
     
     #endregion

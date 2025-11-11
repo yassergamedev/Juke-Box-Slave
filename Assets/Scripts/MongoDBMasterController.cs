@@ -22,6 +22,7 @@ public class MongoDBMasterController : MonoBehaviour
     public Button clearQueueButton;
     public ScrollRect queueScrollRect;
     public GameObject queueItemPrefab;
+    public Button cursorLockToggleButton;
 
     private MongoDBManager mongoDBManager;
     private AlbumManager albumManager;
@@ -86,6 +87,26 @@ public class MongoDBMasterController : MonoBehaviour
         
         if (clearQueueButton != null)
             clearQueueButton.onClick.AddListener(() => _ = ClearQueue());
+        
+        // Setup cursor lock toggle button
+        if (cursorLockToggleButton != null)
+        {
+            cursorLockToggleButton.onClick.AddListener(ToggleCursorLock);
+        }
+    }
+    
+    private void ToggleCursorLock()
+    {
+        if (Cursor.lockState == CursorLockMode.Locked)
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+        }
+        else
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+        }
     }
 
     private void StartPolling()
