@@ -30,8 +30,6 @@ public class KeyboardButtonController : MonoBehaviour
     public void AddLetter() {
         if(AlbumManager.Instance != null) {
             AlbumManager.Instance.AddLetter(containerText.text);
-
-                AlbumManager.Instance.SearchSongs();
         } else {
             Debug.Log(containerText.text + " is pressed");
         }
@@ -39,7 +37,6 @@ public class KeyboardButtonController : MonoBehaviour
     public void DeleteLetter() { 
         if(AlbumManager.Instance != null) {
             AlbumManager.Instance.DeleteLetter();
-            AlbumManager.Instance.SearchSongs();
         } else {
             Debug.Log("Last char deleted");
         }

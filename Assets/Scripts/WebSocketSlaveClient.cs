@@ -7,7 +7,7 @@ using WebSocketSharp;
 [System.Serializable]
 public class TracklistUpdate
 {
-    public string operationType; // "pause", "resume", "skip", "insert"
+    public string operationType; // "pause", "resume", "skip", "insert", "hubStatus"
     public string songTitle;
     public string status; // "paused", "playing", "skipped", "queued"
     public float? currentTime; // For sync purposes
@@ -23,6 +23,10 @@ public class TracklistUpdate
     public string requestedBy;
     public string masterId;
     public bool existsAtMaster;
+    
+    // Hub status fields
+    public bool hubConnected; // true when hub is connected, false when disconnected
+    public string timestamp; // Timestamp of the status change
 }
 
 public class WebSocketSlaveClient : MonoBehaviour
@@ -43,6 +47,7 @@ public class WebSocketSlaveClient : MonoBehaviour
     
     // Events
     public System.Action<TracklistUpdate> OnTracklistUpdate;
+    public System.Action<bool> OnHubStatusChanged; // bool = hubConnected
     public System.Action OnConnected;
     public System.Action OnDisconnected;
     public System.Action<string> OnError;
@@ -143,7 +148,27 @@ public class WebSocketSlaveClient : MonoBehaviour
         shouldReconnect = true;
         
         LogDebug("WebSocket connected successfully");
+        
+        // Register as slave with the server
+        RegisterAsSlave();
+        
         OnConnected?.Invoke();
+    }
+    
+    private void RegisterAsSlave()
+    {
+        try
+        {
+            // Create registration message as JSON string
+            // JsonUtility doesn't work well with anonymous objects, so we'll create the JSON manually
+            string registrationJson = "{\"type\":\"register\",\"role\":\"slave\"}";
+            SendMessage(registrationJson);
+            LogDebug("Registered as slave with WebSocket server");
+        }
+        catch (Exception ex)
+        {
+            LogError($"Failed to register as slave: {ex.Message}");
+        }
     }
     
     private void OnWebSocketMessage(object sender, MessageEventArgs e)
@@ -166,17 +191,37 @@ public class WebSocketSlaveClient : MonoBehaviour
                 return;
             }
             
-            // Parse the JSON message
+            // Try to parse as TracklistUpdate
             TracklistUpdate update = JsonUtility.FromJson<TracklistUpdate>(e.Data);
             
             if (update != null)
             {
+                // Check if this is a hub status message
+                if (!string.IsNullOrEmpty(update.operationType) && update.operationType == "hubStatus")
+                {
+                    LogDebug($"Received hub status update: hubConnected={update.hubConnected}, timestamp={update.timestamp}");
+                    
+                    if (OnHubStatusChanged != null)
+                    {
+                        OnHubStatusChanged.Invoke(update.hubConnected);
+                        LogDebug($"Invoked OnHubStatusChanged with hubConnected={update.hubConnected}");
+                    }
+                    else
+                    {
+                        LogError("OnHubStatusChanged event has no subscribers!");
+                    }
+                }
+                else
+                {
+                    // Regular tracklist update
                 LogDebug($"Parsed tracklist update: {update.operationType} - {update.songTitle}");
                 OnTracklistUpdate?.Invoke(update);
+                }
             }
             else
             {
                 LogError("Failed to parse tracklist update JSON - result is null");
+                LogError($"Raw message was: {e.Data}");
             }
         }
         catch (Exception ex)
