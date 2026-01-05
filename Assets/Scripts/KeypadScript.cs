@@ -1,6 +1,7 @@
 using UnityEngine;
 using TMPro;
 using UnityEngine.UI;
+using UnityEngine.EventSystems;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -48,8 +49,18 @@ public class KeypadScript : MonoBehaviour
         albumManager = FindAnyObjectByType<AlbumManager>();
     }
 
+    private void DeselectButton()
+    {
+        // Clear EventSystem selection to prevent pointer from triggering other buttons
+        if (EventSystem.current != null)
+        {
+            EventSystem.current.SetSelectedGameObject(null);
+        }
+    }
+
     private void OnDigitButtonPressed(int digit)
     {
+        DeselectButton();
         if (input.Length < maxInputLength)
         {
             input += digit;
@@ -59,13 +70,15 @@ public class KeypadScript : MonoBehaviour
 
     private void ClearInput()
     {
+        DeselectButton();
         input = "";
         ResetOutput();
     }
 
     private async void ValidateInput()
     {
-        string formattedInput = FormatInput(input);
+        DeselectButton();
+        string formattedInput = FormatInputForValidation(input);
 
         if (formattedInput == "99-99")
         {
@@ -100,19 +113,55 @@ public class KeypadScript : MonoBehaviour
 
     private void UpdateOutput()
     {
-        outputText.text = FormatInput(input);
+        outputText.text = FormatInputForDisplay(input);
     }
 
     private void ResetOutput()
     {
-        outputText.text = "00-00";
+        outputText.text = "** - **";
     }
 
-    private string FormatInput(string input)
+    // Original validation format (no spaces, with 0 padding) - used for validation and queue operations
+    private string FormatInputForValidation(string input)
     {
         string part1 = input.Length >= 2 ? input.Substring(0, 2) : input.PadRight(2, '0').Substring(0, 2);
         string part2 = input.Length > 2 ? input.Substring(2).PadRight(2, '0') : "00";
 
         return $"{part1}-{part2}";
+    }
+
+    // New display format (with spaces, with ** placeholders) - used only for visual display
+    private string FormatInputForDisplay(string input)
+    {
+        string part1;
+        string part2;
+        
+        if (input.Length == 0)
+        {
+            part1 = "**";
+            part2 = "**";
+        }
+        else if (input.Length == 1)
+        {
+            part1 = input + "*";
+            part2 = "**";
+        }
+        else if (input.Length == 2)
+        {
+            part1 = input;
+            part2 = "**";
+        }
+        else if (input.Length == 3)
+        {
+            part1 = input.Substring(0, 2);
+            part2 = input.Substring(2) + "*";
+        }
+        else // input.Length == 4
+        {
+            part1 = input.Substring(0, 2);
+            part2 = input.Substring(2, 2);
+        }
+
+        return $"{part1} - {part2}";
     }
 }

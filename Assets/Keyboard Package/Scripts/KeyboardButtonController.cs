@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.EventSystems;
 using TMPro;
 
 public class KeyboardButtonController : MonoBehaviour
@@ -27,7 +28,17 @@ public class KeyboardButtonController : MonoBehaviour
         containerIcon.color = color;
     }
 
+    private void DeselectButton()
+    {
+        // Clear EventSystem selection to prevent pointer from triggering other buttons
+        if (EventSystem.current != null)
+        {
+            EventSystem.current.SetSelectedGameObject(null);
+        }
+    }
+
     public void AddLetter() {
+        DeselectButton();
         if(AlbumManager.Instance != null) {
             AlbumManager.Instance.AddLetter(containerText.text);
         } else {
@@ -35,6 +46,7 @@ public class KeyboardButtonController : MonoBehaviour
         }
     }
     public void DeleteLetter() { 
+        DeselectButton();
         if(AlbumManager.Instance != null) {
             AlbumManager.Instance.DeleteLetter();
         } else {
@@ -42,6 +54,7 @@ public class KeyboardButtonController : MonoBehaviour
         }
     }
     public void SubmitWord() {
+        DeselectButton();
         if(AlbumManager.Instance != null) {
             AlbumManager.Instance.SearchSongs();
         } else {
