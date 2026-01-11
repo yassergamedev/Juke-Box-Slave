@@ -54,6 +54,10 @@ public class AlbumManager : MonoBehaviour
     public TMP_InputField SearchInput;
     public Transform SearchResultContainer;
     public Song SearchResultPrefab;
+    
+    [Header("Search Window Settings")]
+    public GameObject SearchWindow; // The search window/panel GameObject to close
+    public TMP_InputField SearchTimeoutInputField; // Input field to configure timeout
 
     public List<Album> albums = new List<Album>();
     private List<Album> activeAlbums = new List<Album>();
@@ -62,6 +66,11 @@ public class AlbumManager : MonoBehaviour
    
     public bool isSlave;
     public Text debugText;
+    
+    // Search window timeout
+    private Coroutine searchTimeoutCoroutine;
+    private float searchTimeoutDuration = 30f; // Default 30 seconds
+    private const string SEARCH_TIMEOUT_PREF_KEY = "SearchWindowTimeout";
 
     private MongoDBManager mongoDBManager;
     private List<MongoDBModels.AlbumDocument> mongoAlbums = new List<MongoDBModels.AlbumDocument>();
@@ -106,6 +115,17 @@ public class AlbumManager : MonoBehaviour
         await LoadAlbumsFromMongoDB();
         UpdateButtonStates();
         master = FindAnyObjectByType<MasterNetworkHandler>();
+        
+        // Load search timeout from PlayerPrefs
+        searchTimeoutDuration = PlayerPrefs.GetFloat(SEARCH_TIMEOUT_PREF_KEY, 30f);
+        
+        // Setup timeout input field
+        if (SearchTimeoutInputField != null)
+        {
+            SearchTimeoutInputField.text = searchTimeoutDuration.ToString();
+            SearchTimeoutInputField.onValueChanged.AddListener(OnSearchTimeoutChanged);
+            SearchTimeoutInputField.onEndEdit.AddListener(OnSearchTimeoutEndEdit);
+        }
     }
     public void UpdateDebugText(string message)
     {
@@ -788,6 +808,24 @@ public class AlbumManager : MonoBehaviour
             NextButton.interactable = currentAlbumIndex + 4 < albums.Count;
     }
 
+    public void AddLetter(string letter)
+    {
+        if (SearchInput != null)
+        {
+            SearchInput.text += letter;
+            ResetSearchTimeout(); // Reset timeout when user types
+        }
+    }
+
+    public void DeleteLetter()
+    {
+        if (SearchInput != null && SearchInput.text.Length > 0)
+        {
+            SearchInput.text = SearchInput.text.Substring(0, SearchInput.text.Length - 1);
+            ResetSearchTimeout(); // Reset timeout when user deletes
+        }
+    }
+    
     public void SearchSongs()
     {
         string query = SearchInput.text.ToLower();
@@ -807,21 +845,78 @@ public class AlbumManager : MonoBehaviour
                 }
             }
         }
+        
+        ResetSearchTimeout(); // Reset timeout when search is performed
     }
-
-    public void AddLetter(string letter)
+    
+    private void ResetSearchTimeout()
     {
-        if (SearchInput != null)
+        // Stop existing timeout coroutine
+        if (searchTimeoutCoroutine != null)
         {
-            SearchInput.text += letter;
+            StopCoroutine(searchTimeoutCoroutine);
+        }
+        
+        // Only start timeout if search window is active
+        if (SearchWindow != null && SearchWindow.activeSelf)
+        {
+            searchTimeoutCoroutine = StartCoroutine(SearchTimeoutCoroutine());
         }
     }
-
-    public void DeleteLetter()
+    
+    private IEnumerator SearchTimeoutCoroutine()
     {
-        if (SearchInput != null && SearchInput.text.Length > 0)
+        yield return new WaitForSeconds(searchTimeoutDuration);
+        
+        // Close the search window
+        if (SearchWindow != null && SearchWindow.activeSelf)
         {
-            SearchInput.text = SearchInput.text.Substring(0, SearchInput.text.Length - 1);
+            SearchWindow.SetActive(false);
+            Debug.Log($"[ALBUM_MANAGER] Search window closed after {searchTimeoutDuration} seconds of inactivity");
         }
+        
+        searchTimeoutCoroutine = null;
+    }
+    
+    private void OnSearchTimeoutChanged(string value)
+    {
+        // Update timeout value as user types (for real-time preview)
+        if (float.TryParse(value, out float timeout))
+        {
+            if (timeout > 0)
+            {
+                searchTimeoutDuration = timeout;
+            }
+        }
+    }
+    
+    private void OnSearchTimeoutEndEdit(string value)
+    {
+        // Save timeout value when user finishes editing
+        if (float.TryParse(value, out float timeout))
+        {
+            if (timeout > 0)
+            {
+                searchTimeoutDuration = timeout;
+                PlayerPrefs.SetFloat(SEARCH_TIMEOUT_PREF_KEY, searchTimeoutDuration);
+                PlayerPrefs.Save();
+                Debug.Log($"[ALBUM_MANAGER] Search window timeout set to {searchTimeoutDuration} seconds");
+            }
+            else
+            {
+                // Reset to default if invalid value
+                searchTimeoutDuration = 30f;
+                if (SearchTimeoutInputField != null)
+                {
+                    SearchTimeoutInputField.text = searchTimeoutDuration.ToString();
+                }
+            }
+        }
+    }
+    
+    // Call this method when the search window is opened (attach to button that opens search)
+    public void OnSearchWindowOpened()
+    {
+        ResetSearchTimeout();
     }
 }

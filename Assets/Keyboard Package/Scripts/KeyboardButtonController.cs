@@ -45,6 +45,14 @@ public class KeyboardButtonController : MonoBehaviour
             Debug.Log(containerText.text + " is pressed");
         }
     }
+    public void AddSpace() {
+        DeselectButton();
+        if(AlbumManager.Instance != null) {
+            AlbumManager.Instance.AddLetter(" ");
+        } else {
+            Debug.Log("Space is pressed");
+        }
+    }
     public void DeleteLetter() { 
         DeselectButton();
         if(AlbumManager.Instance != null) {
